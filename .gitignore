@@ -1,0 +1,19 @@
+# Build artifacts
+*.o
+*.d
+
+# Binaries
+hft_engine
+test_runner
+bench_runner
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
