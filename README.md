@@ -58,7 +58,7 @@ A high-frequency trading order matching engine built from scratch in modern C++1
 
 **Data flow**: UDP packets arrive on the network thread (producer), get pushed into a lock-free SPSC ring buffer, and are consumed by the matching engine thread. The engine allocates `Order` objects from a pre-allocated arena and processes them through the order book using price-time priority matching. Execution reports are emitted inline.
 
-**Threading model**: Exactly two threads — one producer (network I/O) and one consumer (matching engine). No mutexes, no locks, no condition variables. The SPSC ring buffer is the only synchronization point, and it's lock-free with acquire/release memory ordering.
+**Threading model**: Exactly two threads — one producer (network I/O) and one consumer (matching engine). No mutexes, no locks, no condition variables. The SPSC ring buffer is the only synchronization point, and it's lock-free with acquire/release memory ordering. 
 
 ---
 
