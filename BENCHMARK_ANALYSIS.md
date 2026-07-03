@@ -25,6 +25,17 @@ Both benchmark variants use:
 
 Backend selection is a template parameter. No virtual dispatch is introduced.
 
+## Order lifetime and arena recycling
+
+`OrderArena` preallocates order storage and maintains an O(1) free list of
+reusable slots. When an order leaves the book through cancellation, full
+execution, or reset, its arena slot is pushed onto the free list. Future
+allocations first reuse free-list slots before consuming new arena capacity.
+
+This recycling path is shared by both the `std::map` and bitmap backends, so it
+improves long-running memory stability without being the source of the measured
+map-vs-bitmap speedup.
+
 ## Price-index variants
 
 ### Sparse map

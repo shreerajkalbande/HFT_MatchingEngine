@@ -159,7 +159,7 @@ Both implementations use the same:
 
 - `BasicMatchingEngine` algorithm
 - generated event pattern
-- `OrderArena`
+- `OrderArena` allocation and O(1) free-list recycling
 - `unordered_map<order_id, Order*>`
 - intrusive FIFO representation
 - compiler flags and validation checks
@@ -177,7 +177,7 @@ See [BENCHMARK_ANALYSIS.md](BENCHMARK_ANALYSIS.md) for interpretation rules.
 - No replace, market, stop, iceberg, or auction orders
 - No risk checks, journaling, recovery, networking, or concurrency
 - Standard `unordered_map` allocations are not pooled
-- `OrderArena` is monotonic until reset
+- `OrderArena` reuses slots for cancelled, fully filled, or reset orders
 
 ## Summary
 
