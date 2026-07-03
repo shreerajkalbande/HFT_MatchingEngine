@@ -1,450 +1,348 @@
-#include <cassert>
+#include <cstdint>
 #include <iostream>
-#include <cstring>
+#include <string>
+#include <vector>
 
+#include "../BitmapOrderBook.h"
+#include "../MatchingEngine.h"
 #include "../OrderArena.h"
 #include "../OrderBook.h"
-#include "../MatchingEngine.h"
-#include "../SPSCRingBuffer.h"
 
-static int tests_passed = 0;
-static int tests_failed = 0;
+namespace
+{
+int tests_passed = 0;
+int tests_failed = 0;
 
 #define TEST(name) static void name()
 #define RUN_TEST(name) do { \
     std::cout << "  " #name "... "; \
-    try { name(); std::cout << "PASSED\n"; tests_passed++; } \
-    catch (...) { std::cout << "FAILED\n"; tests_failed++; } \
-} while(0)
+    try { name(); std::cout << "PASSED\n"; ++tests_passed; } \
+    catch (...) { std::cout << "FAILED\n"; ++tests_failed; } \
+} while (0)
 
-#define ASSERT_EQ(a, b) do { if ((a) != (b)) { \
-    std::cerr << "ASSERT_EQ failed: " << (a) << " != " << (b) \
-              << " at line " << __LINE__ << "\n"; throw 1; } } while(0)
+#define ASSERT_EQ(a, b) do { const auto actual = (a); const auto expected = (b); \
+    if (actual != expected) { \
+        std::cerr << "ASSERT_EQ failed: " << actual << " != " << expected \
+                  << " at line " << __LINE__ << "\n"; throw 1; } } while (0)
 
-#define ASSERT_TRUE(x)  do { if (!(x)) { \
-    std::cerr << "ASSERT_TRUE failed at line " << __LINE__ << "\n"; throw 1; } } while(0)
+#define ASSERT_TRUE(x) do { if (!(x)) { \
+    std::cerr << "ASSERT_TRUE failed at line " << __LINE__ << "\n"; throw 1; } } while (0)
 
-#define ASSERT_FALSE(x) do { if ((x)) { \
-    std::cerr << "ASSERT_FALSE failed at line " << __LINE__ << "\n"; throw 1; } } while(0)
+#define ASSERT_FALSE(x) do { if (x) { \
+    std::cerr << "ASSERT_FALSE failed at line " << __LINE__ << "\n"; throw 1; } } while (0)
 
 #define ASSERT_NULL(x) do { if ((x) != nullptr) { \
-    std::cerr << "ASSERT_NULL failed at line " << __LINE__ << "\n"; throw 1; } } while(0)
+    std::cerr << "ASSERT_NULL failed at line " << __LINE__ << "\n"; throw 1; } } while (0)
 
 #define ASSERT_NOT_NULL(x) do { if ((x) == nullptr) { \
-    std::cerr << "ASSERT_NOT_NULL failed at line " << __LINE__ << "\n"; throw 1; } } while(0)
+    std::cerr << "ASSERT_NOT_NULL failed at line " << __LINE__ << "\n"; throw 1; } } while (0)
 
-// ========================== Arena Tests ==========================
-
-TEST(test_arena_basic_allocation)
-{
-    OrderArena arena(100);
-    Order* o = arena.allocateOrder(1, 100, 50, Side::BID, 1000);
-    ASSERT_NOT_NULL(o);
-    ASSERT_EQ(o->id, 1UL);
-    ASSERT_EQ(o->price, 100U);
-    ASSERT_EQ(o->quantity, 50U);
-    ASSERT_TRUE(o->side == Side::BID);
-    ASSERT_EQ(o->timestamp, 1000UL);
-    ASSERT_TRUE(o->is_active);
-}
-
-TEST(test_arena_sequential_allocation)
-{
-    OrderArena arena(100);
-    Order* o1 = arena.allocateOrder(1, 100, 50, Side::BID, 1000);
-    Order* o2 = arena.allocateOrder(2, 101, 60, Side::ASK, 2000);
-    ASSERT_NOT_NULL(o1);
-    ASSERT_NOT_NULL(o2);
-    ASSERT_TRUE(o1 != o2);
-    ASSERT_EQ(arena.size(), 2UL);
-}
-
-TEST(test_arena_exhaustion)
+TEST(test_arena_allocation_exhaustion_and_reset)
 {
     OrderArena arena(2);
-    Order* o1 = arena.allocateOrder(1, 100, 50, Side::BID, 1000);
-    Order* o2 = arena.allocateOrder(2, 101, 60, Side::ASK, 2000);
-    ASSERT_NOT_NULL(o1);
-    ASSERT_NOT_NULL(o2);
+    Order* first = arena.allocateOrder(1, 100, 50, Side::BID, 1000);
+    Order* second = arena.allocateOrder(2, 101, 60, Side::ASK, 2000);
 
-    // Suppress cerr output for this test
+    ASSERT_NOT_NULL(first);
+    ASSERT_NOT_NULL(second);
+    ASSERT_EQ(first->id, 1UL);
+    ASSERT_EQ(second->timestamp, 2000UL);
+    ASSERT_EQ(arena.size(), 2UL);
+
     std::streambuf* old = std::cerr.rdbuf(nullptr);
-    Order* o3 = arena.allocateOrder(3, 102, 70, Side::BID, 3000);
+    Order* overflow = arena.allocateOrder(3, 102, 70, Side::BID, 3000);
     std::cerr.rdbuf(old);
-
-    ASSERT_NULL(o3);
-    ASSERT_EQ(arena.size(), 2UL);
-}
-
-TEST(test_arena_reset)
-{
-    OrderArena arena(2);
-    arena.allocateOrder(1, 100, 50, Side::BID, 1000);
-    arena.allocateOrder(2, 101, 60, Side::ASK, 2000);
-    ASSERT_EQ(arena.size(), 2UL);
+    ASSERT_NULL(overflow);
 
     arena.reset();
     ASSERT_EQ(arena.size(), 0UL);
-
-    Order* o = arena.allocateOrder(3, 102, 70, Side::BID, 3000);
-    ASSERT_NOT_NULL(o);
-    ASSERT_EQ(o->id, 3UL);
+    ASSERT_NOT_NULL(arena.allocateOrder(4, 103, 80, Side::ASK, 4000));
 }
 
-// ========================== OrderBook Tests ==========================
-
-TEST(test_orderbook_empty)
+TEST(test_arena_reuses_deallocated_slot)
 {
-    OrderBook book;
+    OrderArena arena(1);
+    Order* first = arena.allocateOrder(1, 100, 10, Side::BID, 1);
+    ASSERT_NOT_NULL(first);
+    ASSERT_TRUE(arena.deallocateOrder(first));
+    Order* second = arena.allocateOrder(2, 101, 20, Side::ASK, 2);
+    ASSERT_EQ(second, first);
+    ASSERT_EQ(second->id, 2UL);
+    ASSERT_EQ(arena.size(), 1UL);
+}
+
+template <typename Book>
+void verifyBookBehavior()
+{
+    OrderArena arena(16);
+    Book book(16);
+
     ASSERT_TRUE(book.bidsEmpty());
     ASSERT_TRUE(book.asksEmpty());
     ASSERT_NULL(book.bestBid());
     ASSERT_NULL(book.bestAsk());
-    ASSERT_EQ(book.bidDepth(), 0UL);
-    ASSERT_EQ(book.askDepth(), 0UL);
-}
 
-TEST(test_orderbook_insert_bid)
-{
-    OrderArena arena(10);
-    OrderBook book;
-    Order* o = arena.allocateOrder(1, 100, 50, Side::BID, 1000);
-    book.insertBid(o);
+    Order* low_bid = arena.allocateOrder(1, 100, 40, Side::BID, 1);
+    Order* old_best_bid = arena.allocateOrder(2, 102, 30, Side::BID, 2);
+    Order* new_best_bid = arena.allocateOrder(3, 102, 20, Side::BID, 3);
+    Order* high_ask = arena.allocateOrder(4, 108, 60, Side::ASK, 4);
+    Order* best_ask = arena.allocateOrder(5, 105, 70, Side::ASK, 5);
 
-    ASSERT_FALSE(book.bidsEmpty());
-    ASSERT_EQ(book.bestBid()->id, 1UL);
-    ASSERT_EQ(book.bidDepth(), 1UL);
-}
+    ASSERT_TRUE(book.insertBid(low_bid));
+    ASSERT_TRUE(book.insertBid(old_best_bid));
+    ASSERT_TRUE(book.insertBid(new_best_bid));
+    ASSERT_TRUE(book.insertAsk(high_ask));
+    ASSERT_TRUE(book.insertAsk(best_ask));
 
-TEST(test_orderbook_insert_ask)
-{
-    OrderArena arena(10);
-    OrderBook book;
-    Order* o = arena.allocateOrder(1, 105, 30, Side::ASK, 1000);
-    book.insertAsk(o);
-
-    ASSERT_FALSE(book.asksEmpty());
-    ASSERT_EQ(book.bestAsk()->id, 1UL);
-    ASSERT_EQ(book.askDepth(), 1UL);
-}
-
-TEST(test_orderbook_price_priority_bids)
-{
-    OrderArena arena(10);
-    OrderBook book;
-    Order* low  = arena.allocateOrder(1, 95,  50, Side::BID, 1000);
-    Order* high = arena.allocateOrder(2, 100, 50, Side::BID, 2000);
-    Order* mid  = arena.allocateOrder(3, 97,  50, Side::BID, 3000);
-
-    book.insertBid(low);
-    book.insertBid(high);
-    book.insertBid(mid);
-
-    // Best bid should be highest price
     ASSERT_EQ(book.bestBid()->id, 2UL);
-    ASSERT_EQ(book.bestBid()->price, 100U);
-}
-
-TEST(test_orderbook_price_priority_asks)
-{
-    OrderArena arena(10);
-    OrderBook book;
-    Order* high = arena.allocateOrder(1, 110, 50, Side::ASK, 1000);
-    Order* low  = arena.allocateOrder(2, 100, 50, Side::ASK, 2000);
-    Order* mid  = arena.allocateOrder(3, 105, 50, Side::ASK, 3000);
-
-    book.insertAsk(high);
-    book.insertAsk(low);
-    book.insertAsk(mid);
-
-    // Best ask should be lowest price
-    ASSERT_EQ(book.bestAsk()->id, 2UL);
-    ASSERT_EQ(book.bestAsk()->price, 100U);
-}
-
-TEST(test_orderbook_bbo)
-{
-    OrderArena arena(10);
-    OrderBook book;
-    Order* bid = arena.allocateOrder(1, 99, 100, Side::BID, 1000);
-    Order* ask = arena.allocateOrder(2, 101, 200, Side::ASK, 2000);
-    book.insertBid(bid);
-    book.insertAsk(ask);
+    ASSERT_EQ(book.bestAsk()->id, 5UL);
+    ASSERT_EQ(book.bidDepth(), 3UL);
+    ASSERT_EQ(book.askDepth(), 2UL);
+    ASSERT_EQ(book.bidLevels(), 2UL);
+    ASSERT_EQ(book.askLevels(), 2UL);
 
     BBO bbo = book.getBBO();
-    ASSERT_EQ(bbo.best_bid_price, 99U);
-    ASSERT_EQ(bbo.best_bid_qty, 100U);
-    ASSERT_EQ(bbo.best_ask_price, 101U);
-    ASSERT_EQ(bbo.best_ask_qty, 200U);
-}
+    ASSERT_EQ(bbo.best_bid_price, 102U);
+    ASSERT_EQ(bbo.best_bid_qty, 50UL);
+    ASSERT_EQ(bbo.best_ask_price, 105U);
+    ASSERT_EQ(bbo.best_ask_qty, 70UL);
 
-TEST(test_orderbook_cancel)
-{
-    OrderArena arena(10);
-    OrderBook book;
-    Order* o = arena.allocateOrder(1, 100, 50, Side::BID, 1000);
-    book.insertBid(o);
+    book.fillBestBid(30);
+    ASSERT_FALSE(old_best_bid->is_active);
+    ASSERT_EQ(book.bestBid()->id, 3UL);
+    ASSERT_EQ(book.getBBO().best_bid_qty, 20UL);
 
-    ASSERT_TRUE(book.cancelOrder(1));
-    ASSERT_FALSE(o->is_active);
-}
-
-TEST(test_orderbook_cancel_nonexistent)
-{
-    OrderBook book;
+    ASSERT_TRUE(book.cancelOrder(3));
+    ASSERT_EQ(book.bestBid()->id, 1UL);
+    ASSERT_EQ(book.getBBO().best_bid_price, 100U);
     ASSERT_FALSE(book.cancelOrder(999));
+
+    book.reset();
+    ASSERT_FALSE(low_bid->is_active);
+    ASSERT_FALSE(high_ask->is_active);
+    ASSERT_FALSE(best_ask->is_active);
+    ASSERT_EQ(book.totalOrders(), 0UL);
+    ASSERT_EQ(book.bidLevels(), 0UL);
+    ASSERT_EQ(book.askLevels(), 0UL);
 }
 
-// ========================== Matching Engine Tests ==========================
-
-TEST(test_basic_match)
+TEST(test_map_order_book_conformance)
 {
-    OrderArena arena(10);
-    MatchingEngine engine;
-
-    Order* ask = arena.allocateOrder(1, 100, 50, Side::ASK, 1000);
-    engine.processOrder(ask);
-
-    Order* bid = arena.allocateOrder(2, 100, 50, Side::BID, 2000);
-    engine.processOrder(bid);
-
-    ASSERT_EQ(ask->quantity, 0U);
-    ASSERT_EQ(bid->quantity, 0U);
-    ASSERT_FALSE(ask->is_active);
-    ASSERT_FALSE(bid->is_active);
+    verifyBookBehavior<MapOrderBook>();
 }
 
-TEST(test_no_match)
+TEST(test_bitmap_order_book_conformance)
 {
-    OrderArena arena(10);
-    MatchingEngine engine;
-
-    Order* ask = arena.allocateOrder(1, 105, 50, Side::ASK, 1000);
-    engine.processOrder(ask);
-
-    Order* bid = arena.allocateOrder(2, 100, 50, Side::BID, 2000);
-    engine.processOrder(bid);
-
-    // Bid price < ask price, no match
-    ASSERT_EQ(ask->quantity, 50U);
-    ASSERT_EQ(bid->quantity, 50U);
-    ASSERT_TRUE(ask->is_active);
-    ASSERT_TRUE(bid->is_active);
-    ASSERT_EQ(engine.bidDepth(), 1UL);
-    ASSERT_EQ(engine.askDepth(), 1UL);
+    verifyBookBehavior<BitmapOrderBook>();
 }
 
-TEST(test_partial_fill)
+TEST(test_bitmap_crosses_word_and_summary_boundaries)
 {
-    OrderArena arena(10);
-    MatchingEngine engine;
+    OrderArena arena(16);
+    BitmapOrderBook book;
+    const uint32_t prices[] = {1, 64, 65, 4096, 4097, 10'000, 20'000};
 
-    Order* ask = arena.allocateOrder(1, 100, 30, Side::ASK, 1000);
-    engine.processOrder(ask);
+    for (size_t i = 0; i < 7; ++i)
+    {
+        Order* order = arena.allocateOrder(i + 1, prices[i], 10, Side::ASK, i);
+        ASSERT_TRUE(book.insertAsk(order));
+    }
 
-    Order* bid = arena.allocateOrder(2, 100, 50, Side::BID, 2000);
-    engine.processOrder(bid);
+    for (size_t i = 0; i < 7; ++i)
+    {
+        ASSERT_EQ(book.bestAsk()->price, prices[i]);
+        ASSERT_TRUE(book.cancelOrder(i + 1));
+    }
 
-    // ask fully filled, bid has 20 remaining
-    ASSERT_EQ(ask->quantity, 0U);
-    ASSERT_FALSE(ask->is_active);
-    ASSERT_EQ(bid->quantity, 20U);
-    ASSERT_TRUE(bid->is_active);
-    ASSERT_EQ(engine.bidDepth(), 1UL);
+    ASSERT_TRUE(book.asksEmpty());
+
+    for (size_t i = 0; i < 7; ++i)
+    {
+        Order* order = arena.allocateOrder(
+            i + 8, prices[i], 10, Side::BID, i + 8);
+        ASSERT_TRUE(book.insertBid(order));
+    }
+
+    for (size_t i = 7; i-- > 0;)
+    {
+        ASSERT_EQ(book.bestBid()->price, prices[i]);
+        ASSERT_TRUE(book.cancelOrder(i + 8));
+    }
+
+    ASSERT_TRUE(book.bidsEmpty());
 }
 
-TEST(test_fifo_priority)
+TEST(test_bitmap_rejects_prices_outside_dense_domain)
 {
-    OrderArena arena(10);
-    MatchingEngine engine;
+    OrderArena arena(3);
+    BitmapOrderBook book;
+    Order* zero = arena.allocateOrder(1, 0, 10, Side::BID, 1);
+    Order* too_high = arena.allocateOrder(
+        2, BitmapOrderBook::MAX_PRICE + 1, 10, Side::ASK, 2);
 
-    // Two asks at same price, inserted in order (older first)
-    Order* ask_old = arena.allocateOrder(1, 100, 50, Side::ASK, 1000);  // older
-    Order* ask_new = arena.allocateOrder(2, 100, 50, Side::ASK, 2000);  // newer
-    engine.processOrder(ask_old);
-    engine.processOrder(ask_new);
+    ASSERT_FALSE(book.insertBid(zero));
+    ASSERT_FALSE(book.insertAsk(too_high));
+    ASSERT_EQ(book.totalOrders(), 0UL);
 
-    // Bid that matches exactly one ask
-    Order* bid = arena.allocateOrder(3, 100, 50, Side::BID, 3000);
-    engine.processOrder(bid);
+    BitmapMatchingEngine engine;
+    Order* engine_order = arena.allocateOrder(
+        3, BitmapOrderBook::MAX_PRICE + 1, 10, Side::BID, 3);
+    ASSERT_FALSE(engine.processOrder(engine_order));
+    ASSERT_EQ(engine.totalOrders(), 0UL);
+}
 
-    // FIFO: older ask must be filled first
+struct ExecutionLog
+{
+    std::vector<Execution> values;
+};
+
+void recordExecution(const Execution& execution, void* context)
+{
+    static_cast<ExecutionLog*>(context)->values.push_back(execution);
+}
+
+template <typename Engine>
+void verifyEngineBehavior()
+{
+    OrderArena arena(20);
+    ExecutionLog log;
+    Engine engine(20, recordExecution, &log);
+
+    Order* ask_old = arena.allocateOrder(1, 100, 30, Side::ASK, 1);
+    Order* ask_new = arena.allocateOrder(2, 100, 40, Side::ASK, 2);
+    Order* ask_next = arena.allocateOrder(3, 101, 50, Side::ASK, 3);
+    ASSERT_TRUE(engine.processOrder(ask_old));
+    ASSERT_TRUE(engine.processOrder(ask_new));
+    ASSERT_TRUE(engine.processOrder(ask_next));
+
+    Order* bid = arena.allocateOrder(4, 101, 90, Side::BID, 4);
+    ASSERT_TRUE(engine.processOrder(bid));
+
     ASSERT_EQ(ask_old->quantity, 0U);
-    ASSERT_FALSE(ask_old->is_active);
-    ASSERT_EQ(ask_new->quantity, 50U);
-    ASSERT_TRUE(ask_new->is_active);
+    ASSERT_EQ(ask_new->quantity, 0U);
+    ASSERT_EQ(ask_next->quantity, 30U);
     ASSERT_EQ(bid->quantity, 0U);
-}
+    ASSERT_EQ(log.values.size(), 3UL);
+    ASSERT_EQ(log.values[0].maker_order_id, 1UL);
+    ASSERT_EQ(log.values[1].maker_order_id, 2UL);
+    ASSERT_EQ(log.values[2].maker_order_id, 3UL);
+    ASSERT_EQ(log.values[0].price, 100U);
+    ASSERT_EQ(log.values[2].price, 101U);
+    ASSERT_EQ(engine.getBBO().best_ask_qty, 30UL);
 
-TEST(test_fifo_priority_bids)
-{
-    OrderArena arena(10);
-    MatchingEngine engine;
+    Order* duplicate = arena.allocateOrder(3, 101, 10, Side::BID, 5);
+    ASSERT_FALSE(engine.processOrder(duplicate));
+    ASSERT_TRUE(engine.cancelOrder(3));
+    ASSERT_EQ(engine.totalOrders(), 0UL);
 
-    // Two bids at same price, inserted in order (older first)
-    Order* bid_old = arena.allocateOrder(1, 100, 50, Side::BID, 1000);
-    Order* bid_new = arena.allocateOrder(2, 100, 50, Side::BID, 2000);
+    Order* bid_old = arena.allocateOrder(5, 99, 25, Side::BID, 6);
+    Order* bid_new = arena.allocateOrder(6, 99, 25, Side::BID, 7);
     engine.processOrder(bid_old);
     engine.processOrder(bid_new);
+    ASSERT_TRUE(engine.cancelOrder(5));
 
-    // Ask that matches exactly one bid
-    Order* ask = arena.allocateOrder(3, 100, 50, Side::ASK, 3000);
-    engine.processOrder(ask);
-
-    // FIFO: older bid must be filled first
-    ASSERT_EQ(bid_old->quantity, 0U);
+    Order* ask = arena.allocateOrder(7, 99, 25, Side::ASK, 8);
+    ASSERT_TRUE(engine.processOrder(ask));
+    ASSERT_EQ(bid_old->quantity, 25U);
     ASSERT_FALSE(bid_old->is_active);
-    ASSERT_EQ(bid_new->quantity, 50U);
-    ASSERT_TRUE(bid_new->is_active);
-    ASSERT_EQ(ask->quantity, 0U);
+    ASSERT_EQ(bid_new->quantity, 0U);
 }
 
-TEST(test_multi_level_sweep)
+TEST(test_map_matching_engine_conformance)
 {
-    OrderArena arena(10);
-    MatchingEngine engine;
-
-    // Three asks at different prices
-    Order* ask1 = arena.allocateOrder(1, 100, 30, Side::ASK, 1000);
-    Order* ask2 = arena.allocateOrder(2, 101, 30, Side::ASK, 2000);
-    Order* ask3 = arena.allocateOrder(3, 102, 30, Side::ASK, 3000);
-    engine.processOrder(ask1);
-    engine.processOrder(ask2);
-    engine.processOrder(ask3);
-
-    // Aggressive bid sweeps all levels
-    Order* bid = arena.allocateOrder(4, 105, 70, Side::BID, 4000);
-    engine.processOrder(bid);
-
-    // Should fill ask1 (30@100) and ask2 (30@101), partial ask3 (10@102)
-    ASSERT_EQ(ask1->quantity, 0U);
-    ASSERT_EQ(ask2->quantity, 0U);
-    ASSERT_EQ(ask3->quantity, 20U);
-    ASSERT_EQ(bid->quantity, 0U);
+    verifyEngineBehavior<MapMatchingEngine>();
 }
 
-TEST(test_cancel_then_match)
+TEST(test_bitmap_matching_engine_conformance)
 {
-    OrderArena arena(10);
-    MatchingEngine engine;
-
-    // Two asks at same price
-    Order* ask1 = arena.allocateOrder(1, 100, 50, Side::ASK, 1000);
-    Order* ask2 = arena.allocateOrder(2, 100, 50, Side::ASK, 2000);
-    engine.processOrder(ask1);
-    engine.processOrder(ask2);
-
-    // Cancel the older ask
-    engine.cancelOrder(1);
-
-    // Bid should match ask2 (ask1 was cancelled)
-    Order* bid = arena.allocateOrder(3, 100, 50, Side::BID, 3000);
-    engine.processOrder(bid);
-
-    ASSERT_FALSE(ask1->is_active);
-    ASSERT_EQ(ask1->quantity, 50U);  // cancelled, not filled
-    ASSERT_EQ(ask2->quantity, 0U);
-    ASSERT_EQ(bid->quantity, 0U);
+    verifyEngineBehavior<BitmapMatchingEngine>();
 }
 
-// ========================== Ring Buffer Tests ==========================
-
-TEST(test_ringbuffer_push_pop)
+template <typename Engine>
+std::vector<BBO> runDeterministicStream()
 {
-    SPSCRingBuffer<int, 8> rb;
-    ASSERT_TRUE(rb.push(42));
-    int val = 0;
-    ASSERT_TRUE(rb.pop(val));
-    ASSERT_EQ(val, 42);
-}
-
-TEST(test_ringbuffer_empty)
-{
-    SPSCRingBuffer<int, 8> rb;
-    ASSERT_TRUE(rb.empty());
-    int val = 0;
-    ASSERT_FALSE(rb.pop(val));
-}
-
-TEST(test_ringbuffer_full)
-{
-    SPSCRingBuffer<int, 4> rb;  // capacity = 3 (one slot wasted)
-    ASSERT_TRUE(rb.push(1));
-    ASSERT_TRUE(rb.push(2));
-    ASSERT_TRUE(rb.push(3));
-    ASSERT_FALSE(rb.push(4));  // full
-}
-
-TEST(test_ringbuffer_wraparound)
-{
-    SPSCRingBuffer<int, 4> rb;
-    int val = 0;
-
-    // Fill and drain multiple times to wrap around
-    for (int round = 0; round < 10; round++)
+    struct Event
     {
-        ASSERT_TRUE(rb.push(round * 10 + 1));
-        ASSERT_TRUE(rb.push(round * 10 + 2));
-        ASSERT_TRUE(rb.pop(val));
-        ASSERT_EQ(val, round * 10 + 1);
-        ASSERT_TRUE(rb.pop(val));
-        ASSERT_EQ(val, round * 10 + 2);
+        uint64_t id;
+        uint32_t price;
+        uint32_t quantity;
+        Side side;
+        bool cancel;
+    };
+
+    const Event events[] = {
+        {1, 9900, 50, Side::BID, false},
+        {2, 9901, 20, Side::BID, false},
+        {3, 10'100, 40, Side::ASK, false},
+        {4, 10'101, 30, Side::ASK, false},
+        {2, 0, 0, Side::BID, true},
+        {5, 10'100, 15, Side::BID, false},
+        {6, 10'101, 40, Side::BID, false},
+        {1, 0, 0, Side::BID, true},
+        {7, 10'099, 25, Side::ASK, false},
+        {8, 10'099, 25, Side::BID, false},
+    };
+
+    OrderArena arena(16);
+    Engine engine(16);
+    std::vector<BBO> states;
+
+    for (const Event& event : events)
+    {
+        if (event.cancel)
+        {
+            engine.cancelOrder(event.id);
+        }
+        else
+        {
+            Order* order = arena.allocateOrder(
+                event.id, event.price, event.quantity, event.side, event.id);
+            engine.processOrder(order);
+        }
+        states.push_back(engine.getBBO());
+    }
+
+    return states;
+}
+
+TEST(test_backends_produce_identical_bbo_stream)
+{
+    const std::vector<BBO> map_states =
+        runDeterministicStream<MapMatchingEngine>();
+    const std::vector<BBO> bitmap_states =
+        runDeterministicStream<BitmapMatchingEngine>();
+
+    ASSERT_EQ(map_states.size(), bitmap_states.size());
+    for (size_t i = 0; i < map_states.size(); ++i)
+    {
+        ASSERT_EQ(map_states[i].best_bid_price, bitmap_states[i].best_bid_price);
+        ASSERT_EQ(map_states[i].best_bid_qty, bitmap_states[i].best_bid_qty);
+        ASSERT_EQ(map_states[i].best_ask_price, bitmap_states[i].best_ask_price);
+        ASSERT_EQ(map_states[i].best_ask_qty, bitmap_states[i].best_ask_qty);
     }
 }
-
-TEST(test_ringbuffer_size)
-{
-    SPSCRingBuffer<int, 8> rb;
-    ASSERT_EQ(rb.size(), 0UL);
-    rb.push(1);
-    ASSERT_EQ(rb.size(), 1UL);
-    rb.push(2);
-    ASSERT_EQ(rb.size(), 2UL);
-    int val;
-    rb.pop(val);
-    ASSERT_EQ(rb.size(), 1UL);
-}
-
-// ========================== Main ==========================
+} // namespace
 
 int main()
 {
-    std::cout << "\n=== HFT Matching Engine Test Suite ===\n\n";
+    std::cout << "\n=== Matching Engine Test Suite ===\n\n";
 
     std::cout << "[Arena]\n";
-    RUN_TEST(test_arena_basic_allocation);
-    RUN_TEST(test_arena_sequential_allocation);
-    RUN_TEST(test_arena_exhaustion);
-    RUN_TEST(test_arena_reset);
+    RUN_TEST(test_arena_allocation_exhaustion_and_reset);
+    RUN_TEST(test_arena_reuses_deallocated_slot);
 
-    std::cout << "\n[OrderBook]\n";
-    RUN_TEST(test_orderbook_empty);
-    RUN_TEST(test_orderbook_insert_bid);
-    RUN_TEST(test_orderbook_insert_ask);
-    RUN_TEST(test_orderbook_price_priority_bids);
-    RUN_TEST(test_orderbook_price_priority_asks);
-    RUN_TEST(test_orderbook_bbo);
-    RUN_TEST(test_orderbook_cancel);
-    RUN_TEST(test_orderbook_cancel_nonexistent);
+    std::cout << "\n[Order-book backends]\n";
+    RUN_TEST(test_map_order_book_conformance);
+    RUN_TEST(test_bitmap_order_book_conformance);
+    RUN_TEST(test_bitmap_crosses_word_and_summary_boundaries);
+    RUN_TEST(test_bitmap_rejects_prices_outside_dense_domain);
 
-    std::cout << "\n[Matching Engine]\n";
-    RUN_TEST(test_basic_match);
-    RUN_TEST(test_no_match);
-    RUN_TEST(test_partial_fill);
-    RUN_TEST(test_fifo_priority);
-    RUN_TEST(test_fifo_priority_bids);
-    RUN_TEST(test_multi_level_sweep);
-    RUN_TEST(test_cancel_then_match);
-
-    std::cout << "\n[Ring Buffer]\n";
-    RUN_TEST(test_ringbuffer_push_pop);
-    RUN_TEST(test_ringbuffer_empty);
-    RUN_TEST(test_ringbuffer_full);
-    RUN_TEST(test_ringbuffer_wraparound);
-    RUN_TEST(test_ringbuffer_size);
+    std::cout << "\n[Matching engine]\n";
+    RUN_TEST(test_map_matching_engine_conformance);
+    RUN_TEST(test_bitmap_matching_engine_conformance);
+    RUN_TEST(test_backends_produce_identical_bbo_stream);
 
     std::cout << "\n=== Results: " << tests_passed << " passed, "
               << tests_failed << " failed ===\n\n";
-
-    return tests_failed > 0 ? 1 : 0;
+    return tests_failed == 0 ? 0 : 1;
 }

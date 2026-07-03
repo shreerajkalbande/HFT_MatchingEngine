@@ -1,37 +1,56 @@
 #pragma once
-#include <vector>
+
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <map>
 #include <unordered_map>
+
+#include "BookTypes.h"
 #include "Order.h"
+#include "OrderArena.h"
+#include "PriceLevel.h"
 
-struct BBO
-{
-    uint32_t best_bid_price = 0;
-    uint32_t best_bid_qty = 0;
-    uint32_t best_ask_price = 0;
-    uint32_t best_ask_qty = 0;
-};
-
-class OrderBook
+// Reference price-time-priority book.
+//
+// Prices are indexed by a tree (L = active price levels). Each price level is
+// an intrusive FIFO of Orders, so matching and unlinking an order do not
+// allocate and do not shift unrelated orders.
+class MapOrderBook
 {
 private:
-    std::vector<Order*> bids;  // sorted ascending by price; best bid at back()
-    std::vector<Order*> asks;  // sorted descending by price; best ask at back()
+    using BidLevels = std::map<uint32_t, PriceLevel, std::greater<uint32_t>>;
+    using AskLevels = std::map<uint32_t, PriceLevel>;
+
+    BidLevels bids; // begin() is the highest bid
+    AskLevels asks; // begin() is the lowest ask
     std::unordered_map<uint64_t, Order*> order_lookup;
+    size_t bid_order_count = 0;
+    size_t ask_order_count = 0;
+    OrderArena* arena = nullptr;
+    void releaseOrder(Order* order);
 
 public:
-    void insertBid(Order* order);
-    void insertAsk(Order* order);
+    explicit MapOrderBook(size_t expected_resting_orders = 0);
+    void setArena(OrderArena* order_arena) { arena = order_arena; }
 
-    Order* bestBid();
-    Order* bestAsk();
-    void removeBestBid();
-    void removeBestAsk();
+    bool insertBid(Order* order);
+    bool insertAsk(Order* order);
+
+    Order* bestBid() const;
+    Order* bestAsk() const;
+    void fillBestBid(uint32_t quantity);
+    void fillBestAsk(uint32_t quantity);
 
     bool cancelOrder(uint64_t order_id);
+    bool contains(uint64_t order_id) const;
+    bool acceptsPrice(uint32_t price) const { return price > 0; }
 
     BBO getBBO() const;
-    size_t bidDepth() const { return bids.size(); }
-    size_t askDepth() const { return asks.size(); }
+    size_t bidDepth() const { return bid_order_count; }
+    size_t askDepth() const { return ask_order_count; }
+    size_t bidLevels() const { return bids.size(); }
+    size_t askLevels() const { return asks.size(); }
     size_t totalOrders() const { return order_lookup.size(); }
 
     bool bidsEmpty() const { return bids.empty(); }
@@ -39,3 +58,6 @@ public:
 
     void reset();
 };
+
+// Backward-compatible name for the reference backend.
+using OrderBook = MapOrderBook;

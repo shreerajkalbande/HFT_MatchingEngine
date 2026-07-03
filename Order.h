@@ -7,32 +7,19 @@ enum class Side : uint8_t
     ASK
 };
 
-enum class OrderType : uint8_t
-{
-    NEW,
-    CANCEL
-};
-
-// Each Order occupies exactly one cache line (64 bytes) to prevent
-// false sharing and ensure a single fetch loads all fields.
-struct alignas(64) Order
+// Orders are owned by one matching thread. prev/next form an intrusive FIFO
+// inside a price level, avoiding one std::list allocation per resting order.
+struct Order
 {
     uint64_t id;
     uint64_t timestamp;
+    Order* prev;
+    Order* next;
     uint32_t price;
     uint32_t quantity;
+    uint32_t arena_index;
     Side side;
     bool is_active;
-    // 38 bytes of padding to fill cache line (implicit from alignas)
 };
 
-// Represents the raw data coming off the wire
-struct UDPPacket
-{
-    uint64_t id;
-    uint32_t price;
-    uint32_t quantity;
-    Side side;
-    OrderType type;
-    uint64_t timestamp;
-};
+static_assert(sizeof(Order) <= 64, "Order should fit in one cache line");
