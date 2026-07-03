@@ -1,55 +1,23 @@
-CXX       = g++
-CXXFLAGS  = -std=c++17 -Wall -Wextra -Wpedantic -pthread
-RELEASE   = -O3 -DNDEBUG -march=native
-DEBUG_F   = -O0 -g -fsanitize=address,undefined -DDEBUG
-DEPFLAGS  = -MMD -MP
+CXX := g++
+CXXFLAGS := -std=c++17 -Wall -Wextra -Wpedantic -O3 -DNDEBUG -march=native
 
-CXXFLAGS += $(RELEASE) $(DEPFLAGS)
+CORE := OrderArena.cpp OrderBook.cpp BitmapOrderBook.cpp MatchingEngine.cpp
 
-# Source files
-ENGINE_SRC = OrderArena.cpp OrderBook.cpp MatchingEngine.cpp
-ENGINE_OBJ = $(ENGINE_SRC:.cpp=.o)
+.PHONY: all test bench clean
 
-TARGET    = hft_engine
-TEST_BIN  = test_runner
-BENCH_BIN = bench_runner
+all: test_runner bench_runner
 
-.PHONY: all test bench clean debug
+test_runner: tests/test_main.cpp $(CORE)
+$(CXX) $(CXXFLAGS) $^ -o $@
 
-all: $(TARGET)
+bench_runner: benchmark/bench_main.cpp $(CORE)
+$(CXX) $(CXXFLAGS) $^ -o $@
 
-$(TARGET): main.o $(ENGINE_OBJ)
-	$(CXX) $(CXXFLAGS) -o $@ $^
+test: test_runner
+./test_runner
 
-$(TEST_BIN): tests/test_main.o $(ENGINE_OBJ)
-	$(CXX) $(CXXFLAGS) -o $@ $^
-
-$(BENCH_BIN): benchmark/bench_main.o $(ENGINE_OBJ)
-	$(CXX) $(CXXFLAGS) -o $@ $^
-
-test: $(TEST_BIN)
-	@./$(TEST_BIN)
-
-bench: $(BENCH_BIN)
-	@./$(BENCH_BIN)
-
-debug:
-	$(MAKE) CXXFLAGS="-std=c++17 -Wall -Wextra -Wpedantic -pthread $(DEBUG_F) $(DEPFLAGS)" all
+bench: bench_runner
+./bench_runner
 
 clean:
-	rm -f *.o *.d $(TARGET) $(TEST_BIN) $(BENCH_BIN)
-	rm -f tests/*.o tests/*.d
-	rm -f benchmark/*.o benchmark/*.d
-
-# Pattern rules
-%.o: %.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-tests/%.o: tests/%.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-benchmark/%.o: benchmark/%.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-# Auto-generated dependencies
--include $(wildcard *.d tests/*.d benchmark/*.d)
+rm -f test_runner bench_runner *.o *.d tests/*.o benchmark/*.o
